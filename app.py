@@ -4,9 +4,11 @@ import sqlite3
 from google import genai
 from google.genai import types
 import json
+
 # ดึง API Key
 gemini_api_key = st.secrets["gemini_api_key"]
 gmn_client = genai.Client(api_key=gemini_api_key)
+
 # รายละเอียดฐานข้อมูล
 db_name = 'test_database.db'
 data_table = 'transactions'
@@ -29,89 +31,128 @@ data_dict_text = """
 - net_amount: ยอดขายสุทธิของรายการนั Dน
 - cost_amount: ต้นทุนรวมของรายการนั Dน
 """
+
 # HELPER FUNCTIONS
 def query_to_dataframe(sql_query, database_name):
-"""รัน SQL และคืนค่าเป็น DataFrame"""
-try:
-connection = sqlite3.connect(database_name)
-result_df = pd.read_sql_query(sql_query, connection)
-connection.close()
-return result_df
-except Exception as e:
-return f"Database Error: {e}"
+    """รัน SQL และคืนค่าเป็น DataFrame"""
+    try:
+        connection = sqlite3.connect(database_name)
+        result_df = pd.read_sql_query(sql_query, connection)
+        connection.close()
+        return result_df
+    except Exception as e:
+        return f"Database Error: {e}"
 
 def generate_gemini_answer(prompt, is_json=False):
-"""เรียก Gemini API"""
-try:
-config = types.GenerateContentConfig(
-response_mime_type="application/json" if is_json else "text/plain" )
-response = gmn_client.models.generate_content(
-model='gemini-2.5-flash-lite',
-contents=prompt,
-config=config)
-return response.text
-except Exception as e:
-return f"AI Error: {e}"
+    """เรียก Gemini API"""
+    try:
+        config = types.GenerateContentConfig(
+            response_mime_type="application/json" if is_json else "text/plain" 
+        )
+        response = gmn_client.models.generate_content(
+            model='gemini-2.5-flash-lite',
+            contents=prompt,
+            config=config
+        )
+        return response.text
+    except Exception as e:
+        return f"AI Error: {e}"
 
 # PROMPT TEMPLATES
 script_prompt = """
 ### Goal
+สร้างคำสั่ง SQL ที่ถูกต้องเพื่อดึงข้อมูลตามคำถาม
+
 ### Context
+คุณคือผู้เชี่ยวชาญด้าน SQLite
+
 ### Input
+- คำถาม: {question}
+- ชื่อตาราง: {table_name}
+- ข้อมูลคอลัมน์: {data_dict}
+
 ### Process
+วิเคราะห์คำถามและสร้าง SQL Query
+
 ### Output
- (ห้ามมีคําอธิบายประกอบ หรือ Markdown นอกเหนือจาก JSON)
+(ห้ามมีคําอธิบายประกอบ หรือ Markdown นอกเหนือจาก JSON)
+{{"script": "SELECT ... "}}
 """
+
 answer_prompt = """
 ### Goal
+สรุปข้อมูลเพื่อตอบคำถาม
+
 ### Context
+คุณคือนักวิเคราะห์ข้อมูล
+
 ### Input
+- คำถาม: {question}
+- ข้อมูลที่ได้จาก Database: {raw_data}
+
 ### Process
+สรุปข้อมูลให้เข้าใจง่าย
+
 ### Output
+ตอบคำถามสั้นๆ ชัดเจน
 """
+
 # CORE LOGIC
 def generate_summary_answer(user_question):
-# 1. ดึง Schema จาก session_state มาใช้ใน Prompt
-script_prompt_input = script_prompt.format(
-question=user_question,
-table_name=data_table,
-data_dict=data_dict_text
- )
-sql_json_text = call_gemini(script_prompt_input, is_json=True)
-try:
-sql_script = json.loads(sql_json_text)['script']
-except:
-return "ขออภัย ไม่สามารถสร้างคําสั่ง SQL ได้"
+    # 1. ดึง Schema จาก session_state มาใช้ใน Prompt
+    script_prompt_input = script_prompt.format(
+        question=user_question,
+        table_name=data_table,
+        data_dict=data_dict_text
+    )
+    
+    # FIX: Changed call_gemini to generate_gemini_answer
+    sql_json_text = generate_gemini_answer(script_prompt_input, is_json=True)
+    
+    try:
+        sql_script = json.loads(sql_json_text)['script']
+    except:
+        return "ขออภัย ไม่สามารถสร้างคําสั่ง SQL ได้"
 
-2. Query ข้อมูล
-df_result = query_to_dataframe(sql_script, db_name)
-if isinstance(df_result, str):
-return df_result
-# 3. สรุปคําตอบ
-answer_prompt_input = answer_prompt.format(
-question=user_question,
-raw_data=df_result.to_string()
- )
-return call_gemini(answer_prompt_input, is_json=False)
+    # FIX: Added a comment tag (#) here
+    # 2. Query ข้อมูล
+    df_result = query_to_dataframe(sql_script, db_name)
+    if isinstance(df_result, str):
+        return df_result
+        
+    # 3. สรุปคําตอบ
+    answer_prompt_input = answer_prompt.format(
+        question=user_question,
+        raw_data=df_result.to_string()
+    )
+    
+    # FIX: Changed call_gemini to generate_gemini_answer
+    return generate_gemini_answer(answer_prompt_input, is_json=False)
+
 # USER INTERFACE
 # ตรวจสอบและสร้าง Chat History ใน Session State
 if "messages" not in st.session_state:
-st.session_state.messages = []
+    st.session_state.messages = []
+
 st.title('Gemini Chat with Database')
+
 # แสดงประวัติการสนทนา
 for message in st.session_state.messages:
-with st.chat_message(message["role"]):
-st.markdown(message["content"])
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+
 # รับ Input
 if prompt := st.chat_input("พิมพ์คําถามที0นี0..."):
-# เก็บและแสดงข้อความ User
-st.session_state.messages.append({"role": "user", "content": prompt})
-with st.chat_message("user"):
-st.markdown(prompt)
-# ประมวลผลและแสดงข้อความ Assistant
-with st.chat_message("assistant"):
-with st.spinner('กําลังหาคําตอบ...'):
-response = generate_summary_answer(prompt)
-st.markdown(response)
-# เก็บคําตอบลง Session
-st.session_state.messages.append({"role": "assistant", "content": response})
+    # เก็บและแสดงข้อความ User
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+        
+    # ประมวลผลและแสดงข้อความ Assistant
+    with st.chat_message("assistant"):
+        with st.spinner('กําลังหาคําตอบ...'):
+            response = generate_summary_answer(prompt)
+            st.markdown(response)
+            
+    # เก็บคําตอบลง Session
+    st.session_state.messages.append({"role": "assistant", "content": response})
